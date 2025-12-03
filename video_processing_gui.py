@@ -29,11 +29,11 @@ import warnings
 import time
 import base64
 import ollama  # Requires the ollama Python package
+import gc
 
 # --- Dynamic Path Setup (for Dockerization / cross-platform) ---
 if platform.system() == "Windows":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    # Set TESSDATA_PREFIX to the parent directory containing tessdata (not used anymore)
     os.environ["TESSDATA_PREFIX"] = r"C:\Program Files\Tesseract-OCR"
     PANN_MODEL_PATH = r"C:\Users\naval\panns_data\cnn14.pth"
 else:
@@ -79,17 +79,32 @@ CLASS_MAP = {
     78: "hair drier", 79: "toothbrush"
 }
 
-# --- Global Constants & Variables ---
-LLAVA_INTERVAL = 5  # LLava is removed for speed
+# --- GPU MEMORY MANAGEMENT & GLOBAL STATE ---
+# Global variables to hold models so we don't reload them unnecessarily
+global_yolo_model = None
+global_blip_model = None
+global_blip_processor = None
 
-# --- Helper: Convert Seconds to HH:MM:SS ---
-def seconds_to_timestr(seconds):
-    hrs = int(seconds // 3600)
-    mins = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hrs:02d}:{mins:02d}:{secs:02d}"
+# Check VRAM (Default to 0 if CPU only)
+total_vram_gb = 0
+if torch.cuda.is_available():
+    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
 
-# --- Hardware Usage Debug Print ---
+# Strategy: If VRAM > 8GB, keep models in memory. Otherwise, clear aggressively.
+KEEP_MODELS_LOADED = total_vram_gb > 8.0
+logging.info(f"VRAM Detected: {total_vram_gb:.2f} GB. Keep Models Loaded: {KEEP_MODELS_LOADED}")
+
+def free_gpu(force=False):
+    """
+    Clears GPU cache. 
+    If force=True or KEEP_MODELS_LOADED=False, it empties the cache.
+    Otherwise, it does nothing to preserve loaded models.
+    """
+    if force or not KEEP_MODELS_LOADED:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+
 def print_hardware_usage():
     print("=== Hardware Usage ===")
     print(f"CPU Usage: {psutil.cpu_percent()}%")
@@ -99,6 +114,32 @@ def print_hardware_usage():
         print(f"GPU Memory Allocated: {torch.cuda.memory_allocated() / (1024 ** 3):.2f} GB")
         print(f"GPU Memory Reserved: {torch.cuda.memory_reserved() / (1024 ** 3):.2f} GB")
     print("======================\n")
+
+# --- Lazy Loading Helpers ---
+def get_yolo_model():
+    global global_yolo_model
+    if global_yolo_model is None:
+        logging.info("Loading YOLO model into memory...")
+        global_yolo_model = YOLO("yolo11s.pt")
+    return global_yolo_model
+
+def get_blip_model():
+    global global_blip_model, global_blip_processor
+    if global_blip_model is None or global_blip_processor is None:
+        logging.info("Loading BLIP model into memory...")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        global_blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        global_blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        global_blip_model.to(device)
+    return global_blip_model, global_blip_processor
+
+
+# --- Helper: Convert Seconds to HH:MM:SS ---
+def seconds_to_timestr(seconds):
+    hrs = int(seconds // 3600)
+    mins = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 # --- Audio Preprocessing ---
 def preprocess_audio(audio_file, sr=32000):
@@ -112,12 +153,11 @@ def euclidean_distance(pt1, pt2):
     return np.linalg.norm(np.array(pt1) - np.array(pt2))
 
 def extract_audio(video_path, audio_path):
-    clip = VideoFileClip(video_path)
-    if clip.audio is None:
-        raise ValueError("No audio track found in the video.")
-    clip.audio.write_audiofile(audio_path, logger=None)
-    clip.reader.close()
-    clip.audio.reader.close()
+    # Using context manager to ensure closure
+    with VideoFileClip(video_path) as clip:
+        if clip.audio is None:
+            raise ValueError("No audio track found in the video.")
+        clip.audio.write_audiofile(audio_path, logger=None)
 
 def transcribe_audio(audio_file, language=None):
     waveform, sr = preprocess_audio(audio_file)
@@ -134,11 +174,15 @@ def transcribe_audio(audio_file, language=None):
         logging.error("Error in audio transcription: %s", str(e))
         transcription = ""
         detected_language = "unknown"
-    os.remove(proc_audio)
+    
+    if os.path.exists(proc_audio):
+        os.remove(proc_audio)
+
     if detected_language.lower() == "unknown" or not detected_language:
         detected_language = "eng"
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    
+    # Only clear if low VRAM
+    free_gpu()
     return transcription, detected_language
 
 def detect_audio_events(audio_file):
@@ -172,16 +216,10 @@ def detect_audio_events(audio_file):
         logging.error("Error in audio event detection: %s", str(e))
         return {"Error": []}
 
-# --- (OCR functionality removed completely) ---
-
 def clean_report(text):
     text = re.sub(r'[\u06F0-\u06F9]+', '', text)
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     return text
-
-def free_gpu_memory():
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 # --- Helper to describe detection position ---
 def describe_position(x_norm, y_norm):
@@ -220,14 +258,16 @@ def get_ollama_models():
         logging.error("Exception in get_ollama_models: %s", str(e))
         return []
 
-# --- Global Model Loading (with GPU memory cleanup after each load) ---
-logging.info("Loading Whisper model (Large-v2)...")
+# --- Global Model Loading (Initial Static Models) ---
+# Note: Whisper and PANNs are currently loaded at startup.
+# In a future update, you might want to move these to lazy loaders too.
+logging.info("Loading Whisper model (small)...")
 whisper_model = whisper.load_model("small")
-free_gpu_memory()
+free_gpu() # Only clears if low VRAM
 
 logging.info("Loading PANNs audio detection model...")
 panns_model = AudioTagging(checkpoint_path=PANN_MODEL_PATH)
-free_gpu_memory()
+free_gpu() # Only clears if low VRAM
 print_hardware_usage()
 
 # --- Modified LLM Integration Functions ---
@@ -289,10 +329,6 @@ def generate_video_description():
         return None
     return description_file
 
-# --- GPU Memory Cleanup ---
-def free_gpu():
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 # --- Main Video Processing Function ---
 def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, show_video=False, ocr_languages="eng"):
@@ -307,9 +343,7 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
     duration = clip.duration
     width, height = clip.size
     video_format = os.path.splitext(video_path)[1].lower()
-    clip.reader.close()
-    if clip.audio is not None:
-        clip.audio.reader.close()
+    clip.close()
 
     logging.info("Video properties: Duration: %s, Frames: %d, FPS: %.2f, Resolution: %dx%d, Format: %s",
                  seconds_to_timestr(duration), frame_count, fps, width, height, video_format)
@@ -370,26 +404,17 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
     report_lines.append("")
 
     print_hardware_usage()
+    # We do NOT force free here unless really necessary
     free_gpu()
 
-    # --- Load Advanced YOLO and BLIP Models (and free GPU memory after each load) ---
-    logging.info("Loading advanced YOLO model (YOLO11x)...")
+    # --- Load Advanced YOLO and BLIP Models (using Smart Lazy Loading) ---
+    logging.info("Ensuring Visual Models (YOLO/BLIP) are loaded...")
     try:
-        yolo_model = YOLO("yolo11s.pt")
-        free_gpu()
-    except Exception as e:
-        logging.error("Error loading YOLO model: %s", str(e))
-        return
-
-    logging.info("Loading BLIP-2 captioning model (base variant)...")
-    try:
+        yolo_engine = get_yolo_model()
+        blip_gen, blip_proc = get_blip_model()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-        blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-        blip_model.to(device)
-        free_gpu()
     except Exception as e:
-        logging.error("Error loading BLIP model: %s", str(e))
+        logging.error("Error loading visual models: %s", str(e))
         return
 
     # --- Prepare Annotated Video Writer if needed ---
@@ -422,7 +447,11 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
         time_str = seconds_to_timestr(current_time)
 
         # --- YOLO Detection ---
-        results = yolo_model(frame)
+        # Note: We resize for inference speed, but use original frame for drawing
+        # inference_frame = cv2.resize(frame, (640, 640)) 
+        # For simplicity in this script, we pass full frame to YOLO (it handles resizing internally usually)
+        results = yolo_engine(frame)
+        
         yolo_descriptions = []
         for result in results:
             if result.boxes is None or result.boxes.data is None:
@@ -444,18 +473,18 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
         # --- BLIP Captioning ---
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame_rgb)
-        inputs = blip_processor(pil_img, return_tensors="pt").to(device)
+        inputs = blip_proc(pil_img, return_tensors="pt").to(device)
         try:
-            output_ids = blip_model.generate(
+            output_ids = blip_gen.generate(
                 **inputs,
-                max_length=60,  # Allows more words (default is ~30)
-                min_length=20,  # Forces captions to be at least 20 tokens long
-                repetition_penalty=1.05,  # Reduces word repetition (higher value = less repetition)
-                num_beams=5,  # Beam search improves caption quality (default is 1)
-                length_penalty=0.6  # Encourages longer, more detailed captions
+                max_length=60,  
+                min_length=20,  
+                repetition_penalty=1.05, 
+                num_beams=5, 
+                length_penalty=0.6 
             )
 
-            caption = blip_processor.decode(output_ids[0], skip_special_tokens=True)
+            caption = blip_proc.decode(output_ids[0], skip_special_tokens=True)
 
             # Remove adjacent repeated words from caption
             words = caption.split()
@@ -470,7 +499,7 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
             logging.error("Error generating BLIP caption: %s", str(e))
             caption = None
 
-        # --- Build Log Line (only include non-N/A fields in plain language) ---
+        # --- Build Log Line ---
         log_fields = []
         if yolo_text:
             log_fields.append(yolo_text)
@@ -505,19 +534,23 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
     if writer is not None:
         writer.release()
     logging.info("Finished processing video.")
+    
+    # Only clear GPU if we are on a low-memory system
     free_gpu()
 
     # --- Merge Annotated Video with Audio ---
     if save_video and os.path.exists(audio_for_video):
         try:
-            video_clip = VideoFileClip(annotated_temp)
-            audio_clip = AudioFileClip(audio_for_video)
-            video_with_audio = video_clip.set_audio(audio_clip)
-            final_video = os.path.splitext(video_path)[0] + "_annotated.mp4"
-            video_with_audio.write_videofile(final_video, codec="libx264", audio_codec="aac")
-            logging.info("Annotated video with audio saved as %s", final_video)
-            os.remove(annotated_temp)
-            os.remove(audio_for_video)
+            with VideoFileClip(annotated_temp) as video_clip, AudioFileClip(audio_for_video) as audio_clip:
+                video_with_audio = video_clip.set_audio(audio_clip)
+                final_video = os.path.splitext(video_path)[0] + "_annotated.mp4"
+                video_with_audio.write_videofile(final_video, codec="libx264", audio_codec="aac")
+                logging.info("Annotated video with audio saved as %s", final_video)
+            
+            # Clean up temp files
+            if os.path.exists(annotated_temp): os.remove(annotated_temp)
+            if os.path.exists(audio_for_video): os.remove(audio_for_video)
+            
         except Exception as e:
             logging.error("Error merging audio with annotated video: %s", str(e))
             final_video = annotated_temp
@@ -535,10 +568,12 @@ def process_video(video_path, sample_rate=1, draw_boxes=True, save_video=False, 
     logging.info("Final Audio Transcription: %s", audio_transcript)
     logging.info("Final Detected Audio Events: %s", audio_events)
 
-    # --- Ollama Summarization Feature (using user-selected model) ---
+    # --- Ollama Summarization Feature ---
     desc_file = generate_video_description()
     if desc_file:
         logging.info("Video description generated: %s", desc_file)
+    
+    # Final cleanup (still respects VRAM flag)
     free_gpu()
 
 
@@ -547,7 +582,7 @@ class VideoProcessingGUI:
     def __init__(self, master):
         self.master = master
         master.title("Video Processing GUI")
-        master.configure(bg="#f0f0f0")  # Light gray background
+        master.configure(bg="#f0f0f0") 
 
         # Row 0: Video File Selection
         self.video_path = tk.StringVar()
@@ -766,7 +801,56 @@ class VideoProcessingGUI:
         messagebox.showinfo("Help", help_text)
 
 
+# ... (All previous code remains exactly the same) ...
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    gui = VideoProcessingGUI(root)
-    root.mainloop()
+    import argparse
+    import sys
+
+    # Set up Command Line Arguments
+    parser = argparse.ArgumentParser(description="Video Processing AI Tool")
+    parser.add_argument("--video", type=str, help="Path to the video file to process")
+    parser.add_argument("--model", type=str, default="llama3", help="Ollama model name (default: llama3)")
+    parser.add_argument("--sample_rate", type=int, default=32, help="Process every Nth frame (default: 32)")
+    parser.add_argument("--no_save", action="store_true", help="Do NOT save the annotated video")
+    parser.add_argument("--show", action="store_true", help="Show video window during processing")
+    
+    args = parser.parse_args()
+
+    # LOGIC: If --video is passed, run Headless. If not, open GUI.
+    if args.video:
+        print(f"--- Running in Headless Mode ---")
+        print(f"Input: {args.video}")
+        print(f"Model: {args.model}")
+        
+        # 1. Handle the global model variable that the functions expect
+        # Since we aren't using Tkinter, we create a fake class to mimic the .get() method
+        class MockVar:
+            def __init__(self, value): self.value = value
+            def get(self): return self.value
+            
+        # Set the global variable used by 'generate_video_description'
+        selected_summarization_model = MockVar(args.model)
+
+        # 2. Run the process
+        try:
+            process_video(
+                video_path=args.video,
+                sample_rate=args.sample_rate,
+                draw_boxes=True,
+                save_video=not args.no_save,
+                show_video=args.show,
+                ocr_languages="eng" # Default to English for CLI
+            )
+            print("--- Processing Complete ---")
+            print("Check 'report.txt' and the output video folder.")
+        except KeyboardInterrupt:
+            print("\nStopped by user.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            
+    else:
+        # No arguments provided? Launch the GUI as normal
+        root = tk.Tk()
+        gui = VideoProcessingGUI(root)
+        root.mainloop()
