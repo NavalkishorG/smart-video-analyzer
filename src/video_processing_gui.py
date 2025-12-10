@@ -109,71 +109,78 @@ def call_openai(prompt, model="gpt-4o"):
     except Exception as e:
         return str(e)
 
+
 def get_viral_prompt(report_text):
     return f"""
-    You are a Master Video Editor AI (The "Video Alchemist").
+    You are a Master Video Editor AI.
     
     INPUT DATA:
     1. **TRANSCRIPT** (Audio with timestamps)
     2. **VISUAL LOG** (Scene descriptions)
-    3. **AUDIO EVENTS** (SFX, Laughter, Music)
+    3. **AUDIO EVENTS** (SFX, Laughter)
 
     --- GOAL ---
-    Transform the raw footage into a **Viral Masterpiece** (Approx 20-25% of original length).
-    **Output Structure:** Organized by "Macro Topics" -> "Micro Cuts".
-    **Style:** "Machine Gun" Pacing. High density. Zero fluff.
+    Create a **Chronological Viral Highlight Reel** (20-25% of total duration).
+    **Style:** "Machine Gun" Pacing. High density. No overlapping clips.
 
-    --- STEP 1: DETECT GENRE & STRATEGY ---
-    Apply the strict editing logic based on the content type:
+    --- STEP 0: DETECT GENRE & STRATEGY ---
+    Determine the video genre based on the transcript and apply the correct editing rule:
 
-    | Genre | **Macro Strategy (The Architect)** | **Micro Rules (The Butcher)** |
+    | Detected Genre | Editing Strategy | Key Elements to Keep |
     | :--- | :--- | :--- |
-    | **Podcast** | Group by "Discussion Points". Identify the Guest vs. Host. | **"The Golden Answer"**: Cut the Host's long rambling. Keep the Question -> Hard Cut to Guest's "Punchline". Keep Laughter. |
-    | **Vlog** | Group by "Locations" or "High Energy Events". | **"Visual Lead"**: If Visual Log shows "Static/Car/Room" -> CUT. If Visual shows "Action/Food/Crowd" -> KEEP. Sync audio to these moments. |
-    | **Edu/Tech** | Group by "Problem -> Steps -> Solution". | **"The Utility Strip"**: Remove "Hey guys", "So...", "Basically". Keep only the Action Steps and Results. |
+    | **Podcast / Interview** | **"The Golden Nugget"** | Keep the specific question + the strongest answer. Cut small talk/pauses. |
+    | **Movie / Narrative** | **"The Trailer"** | Intro Hook + Rising Action + Climax. Do NOT spoil the ending. |
+    | **Tutorial / Educational** | **"The Quick Fix"** | Problem Statement + The Solution Steps. Cut the "Hey guys" intro. |
+    | **Vlog / Lifestyle** | **"The Highlight Reel"** | High-energy visual moments + funniest jokes/reactions. |
 
-    --- STEP 2: THE "MACHINE GUN" EDITING PROCESS ---
-    Perform these actions mentally before generating the JSON:
-    1. **Scan for Chapters:** Identify the 3-5 main topics.
-    2. **Refine the Clips:** Inside each topic, select the best 20% of lines.
-    3. **Silence Killer:** Assume all pauses > 0.5s are removed.
-    4. **Context Glue:** Ensure the start of a sub-clip grammatically follows the end of the previous one.
-    5. **Visual Validation:** - *Good:* Audio="Look at this" / Visual="Screen/Object" -> **KEEP**.
-       - *Bad:* Audio="Action story" / Visual="Talking Head" -> **discard** (unless story is 10/10).
 
-    --- AUTOMATION DATA (STRICT JSON) ---
-    Return a nested structure: "Topics" containing "Subclips".
+    --- STEP 1: MACRO STRATEGY (The Architect) ---
+    1. **Scan ALL Chapters:** Identify every distinct high-value topic (Information, Humor, Action).
+    2. **Discard Low Value:** Remove small talk, logistical setup, and "host rambling".
+
+    --- STEP 2: MICRO REFINEMENT (The Butcher) ---
+    Inside each topic, keep only the top 20% of lines. 
+    **CRITICAL RULES:**
+    1. **Chronological Order:** Clip B MUST start *after* Clip A ends. Never output overlapping time ranges.
+    2. **The 0.5s Split:** If a speaker pauses for >0.5s, SPLIT the clip into two entries. Do not include the silence.
+    3. **Visual Sync:** Prioritize audio that matches the Visual Log (e.g., Audio: "This chart" / Visual: "Chart").
+
+    --- STEP 3: SENTENCE INTEGRITY PROTOCOL ---
+    * **Check the End:** Look at the text at your chosen `end` timestamp.
+    * **Punctuation Match:** The clip MUST end on a full stop (.), question mark (?), or exclamation (!).
+
+    --- AUTOMATION DATA (STRICT FLAT JSON) ---
+    Output a **FLAT LIST** of clips in strictly chronological order.
 
     ```json
     [
         {{
-            "topic_title": "MACRO TOPIC: [2-3 Word Hook]",
-            "topic_start": "HH:MM:SS (Start of first subclip)",
-            "topic_end": "HH:MM:SS (End of last subclip)",
-            "subclips": [
-                {{
-                    "start": "HH:MM:SS",
-                    "end": "HH:MM:SS",
-                    "description": "Context: [Why this specific cut?]. Visual: [Scene Description]",
-                    "edit_type": "Hard Cut / J-Cut",
-                    "viral_score": "9/10"
-                }},
-                {{
-                    "start": "HH:MM:SS",
-                    "end": "HH:MM:SS",
-                    "description": "Guest punchline.",
-                    "edit_type": "Fast Follow"
-                }}
-            ]
+            "start": "HH:MM:SS",
+            "end": "HH:MM:SS",
+            "topic_group": "Topic 1: [Topic Name]",
+            "description": "Context for this cut.",
+            "end_text": "[Last 3 words of this clip - for verification]",
+            "viral_score": "9/10"
+        }},
+        {{
+            "start": "HH:MM:SS",
+            "end": "HH:MM:SS",
+            "topic_group": "Topic 1: [Topic Name]",
+            "description": "Next sentence (skipped silence).",
+            "end_text": "[Last 3 words]",
+            "viral_score": "9/10"
         }}
     ]
     ```
 
     --- REPORT DATA ---
     {report_text}
+
+    --- STRICT OUTPUT RULES ---
+    1. Output **ONLY valid JSON**. No Markdown (no ```json).
+    2. **NO OVERLAPS:** Ensure Start Time > Previous End Time.
+    3. **VERIFY TEXT:** Ensure the `end` timestamp covers the `end_text` fully.
     """
-
-
 
 def extract_json_from_text(text):
     """Robust extraction of JSON list from a mixed text response."""
@@ -233,6 +240,9 @@ def generate_video_descriptions(report_file, json_file, readable_file, model_nam
         logging.error(f"Error processing AI response: {e}")
 
 def process_video(args):
+    # Import difflib here so you don't need to scroll to the top of your file
+    import difflib 
+
     # Setup Logging locally
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -246,7 +256,9 @@ def process_video(args):
     if os.path.exists(temp_audio): os.remove(temp_audio)
 
     # Visual Analysis
-    yolo = get_yolo_model()
+    # NOTE: You can uncomment yolo if you ever need object detection back
+    # yolo = get_yolo_model()
+    
     blip_model, blip_proc, device = get_blip_model()
     
     cap = cv2.VideoCapture(args.video)
@@ -277,7 +289,16 @@ def process_video(args):
         except: caption = ""
 
         if not caption or len(caption) < 5: continue
-        if caption.strip().lower() == last_caption.strip().lower(): continue
+        
+        # --- NEW SIMILARITY LOGIC START ---
+        # Calculate similarity (0.0 to 1.0) between current and last caption
+        similarity = difflib.SequenceMatcher(None, caption.strip().lower(), last_caption.strip().lower()).ratio()
+        
+        # If > 85% similar, skip this log entry
+        if similarity > 0.85:
+            continue
+        # --- NEW SIMILARITY LOGIC END ---
+
         last_caption = caption
         
         timestamp = seconds_to_timestr(frame_idx / fps)

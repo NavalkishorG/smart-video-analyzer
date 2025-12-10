@@ -72,8 +72,8 @@ def create_highlight_reel(input_filename, output_filename, cuts_json):
                 video_clip = video.subclipped(start, end)
                 final_sequence.append(video_clip)
 
-                # 3. Add Black Screen (Reduced to 0.5s for speed)
-                black_screen = ColorClip(size=(w, h), color=(0,0,0)).with_duration(0.5)
+                # 3. Add Black Screen (Reduced to 1s for speed)
+                black_screen = ColorClip(size=(w, h), color=(0,0,0)).with_duration(1)
                 final_sequence.append(black_screen)
 
             print(f"Saving to {output_filename}...")
