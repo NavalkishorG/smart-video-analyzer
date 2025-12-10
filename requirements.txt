@@ -91,3 +91,5 @@ urllib3==2.4.0
 
 
 openai
+#faster-whisper
+decord

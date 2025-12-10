@@ -1,26 +1,45 @@
 import os
 import json
 import argparse
+import textwrap  # Added for wrapping text
 import numpy as np
 from moviepy import VideoFileClip, ImageClip, ColorClip, concatenate_videoclips
 from PIL import Image, ImageDraw, ImageFont
 
-def create_text_image(text, width, height, duration=3):
+def create_text_image(text, width, height, duration=2): # Reduced duration to 2s
+    # Create black background
     img = Image.new('RGB', (width, height), color=(0, 0, 0))
     draw = ImageDraw.Draw(img)
+    
+    # Dynamic Font Sizing (Smaller to ensure fit)
     try:
-        font_size = int(height / 10)
+        # Use 5% of height for font size (smaller than previous 10%)
+        font_size = int(height * 0.05) 
         font = ImageFont.truetype("arial.ttf", size=font_size)
     except IOError:
         font = ImageFont.load_default()
 
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-    x = (width - text_w) / 2
-    y = (height - text_h) / 2
+    # --- TEXT WRAPPING LOGIC ---
+    # Estimate characters per line based on width and font size
+    # This ensures text stays visible!
+    avg_char_width = font_size * 0.6
+    chars_per_line = int((width * 0.8) / avg_char_width) # Use 80% of screen width
     
-    draw.text((x, y), text, font=font, fill=(255, 255, 255))
+    lines = textwrap.wrap(text, width=chars_per_line)
+    
+    # Calculate total text block height to center it vertically
+    line_height = font_size * 1.5
+    total_text_height = len(lines) * line_height
+    current_y = (height - total_text_height) / 2
+    
+    # Draw each line centered
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = (width - text_w) / 2
+        draw.text((x, current_y), line, font=font, fill=(255, 255, 255))
+        current_y += line_height
+        
     return ImageClip(np.array(img)).with_duration(duration)
 
 def create_highlight_reel(input_filename, output_filename, cuts_json):
@@ -41,17 +60,20 @@ def create_highlight_reel(input_filename, output_filename, cuts_json):
             for i, clip_data in enumerate(cuts_data):
                 start = clip_data['start']
                 end = clip_data['end']
-                text_overlay = clip_data['description']
+                text_overlay = clip_data['description'] # Using description as title
                 
                 print(f"Clip {i+1}: {text_overlay} ({start}-{end})")
 
-                desc_clip = create_text_image(text_overlay, w, h, duration=3)
+                # 1. Add Title Card (Shorter duration now)
+                desc_clip = create_text_image(text_overlay, w, h, duration=2)
                 final_sequence.append(desc_clip)
 
+                # 2. Add Video Segment
                 video_clip = video.subclipped(start, end)
                 final_sequence.append(video_clip)
 
-                black_screen = ColorClip(size=(w, h), color=(0,0,0)).with_duration(1)
+                # 3. Add Black Screen (Reduced to 0.5s for speed)
+                black_screen = ColorClip(size=(w, h), color=(0,0,0)).with_duration(0.5)
                 final_sequence.append(black_screen)
 
             print(f"Saving to {output_filename}...")
@@ -76,5 +98,4 @@ if __name__ == "__main__":
     parser.add_argument("--output_video", required=True)
     
     args = parser.parse_args()
-    
     create_highlight_reel(args.input_video, args.output_video, args.cuts_json)

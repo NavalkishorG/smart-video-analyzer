@@ -2,6 +2,7 @@ import subprocess
 import sys
 import os
 import pathlib
+import argparse  # Added to handle command line arguments
 
 def run_pipeline(video_filename, model_type="gpt-4o"):
     # 1. Setup Paths & Names
@@ -9,22 +10,21 @@ def run_pipeline(video_filename, model_type="gpt-4o"):
         print(f"❌ Error: Input file '{video_filename}' not found.")
         return
 
-    # Extract "11" from "11.mp4"
+    # Extract base name (e.g. "11" from "11.mp4")
     base_name = pathlib.Path(video_filename).stem
     
     # Define Output Directory
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
 
-    # --- [CHANGE IS HERE] ---
-    # 1. The Raw Analysis Log (stays the same)
-    report_file = os.path.join(output_dir, f"raw_log_{base_name}.txt")
+    # 1. The Raw Analysis Log
+    report_file = os.path.join(output_dir, f"{base_name}_raw_log.txt")
     
-    # 2. The JSON Cuts File (Now named 'viral_report.json')
-    json_file = os.path.join(output_dir, f"report_{base_name}.json")
+    # 2. The JSON Cuts File
+    json_file = os.path.join(output_dir, f"{base_name}_report.json")
     
-    # 3. The Readable Text Report (Now named 'video_description.txt')
-    readable_report = os.path.join(output_dir, f"video_description_{base_name}.txt")
+    # 3. The Readable Text Report
+    readable_report = os.path.join(output_dir, f"{base_name}_video_description.txt")
     
     # 4. Final Video
     final_output_video = os.path.join(output_dir, f"{base_name}_edit.mp4")
@@ -37,13 +37,14 @@ def run_pipeline(video_filename, model_type="gpt-4o"):
     # --- STEP 1: ANALYSIS ---
     print(f"--- [Step 1/2] Analyzing Video ---")
     
+    # We pass all necessary paths to the analysis script so it knows where to save
     analyze_cmd = [
         sys.executable, "video_processing_gui.py",
         "--video", video_filename,
         "--model", model_type,
         "--report_out", report_file,       
-        "--json_out", json_file,           # Will now save to viral_report_11.json
-        "--readable_out", readable_report  # Will now save to video_description_11.txt
+        "--json_out", json_file,           
+        "--readable_out", readable_report  
     ]
 
     try:
@@ -59,7 +60,7 @@ def run_pipeline(video_filename, model_type="gpt-4o"):
     edit_cmd = [
         sys.executable, "mix.py",
         "--input_video", video_filename,
-        "--cuts_json", json_file,          # mix.py will now look for viral_report_11.json
+        "--cuts_json", json_file,          
         "--output_video", final_output_video 
     ]
 
@@ -75,7 +76,16 @@ def run_pipeline(video_filename, model_type="gpt-4o"):
     print("=================================================")
 
 if __name__ == "__main__":
-    # --- ONLY CHANGE THIS LINE ---
-    TARGET_VIDEO = "11.mp4" 
+    # --- ARGUMENT PARSING LOGIC ---
+    parser = argparse.ArgumentParser(description="AI Video Auto-Editor Pipeline")
     
-    run_pipeline(TARGET_VIDEO)
+    # This allows you to run: python run.py --video 12.mp4
+    parser.add_argument("--video", type=str, default="11.mp4", help="The input video file path")
+    
+    # This allows you to run: python run.py --video 12.mp4 --model gpt-3.5-turbo
+    parser.add_argument("--model", type=str, default="gpt-4o", help="The OpenAI model to use")
+    
+    args = parser.parse_args()
+    
+    # Pass the arguments from the terminal to the function
+    run_pipeline(args.video, args.model)

@@ -111,68 +111,69 @@ def call_openai(prompt, model="gpt-4o"):
 
 def get_viral_prompt(report_text):
     return f"""
-    You are an expert Video Content Analyst.
-    Analyze the provided video report (timestamped audio transcript & visual logs) to generate a comprehensive breakdown.
-
-    --- CRITICAL TIMESTAMP LOGIC: MERGING SEGMENTS ---
-    1. The transcript is split into small blocks (e.g., `[00:04:14 --> 00:04:24]`).
-    2. A complete sentence often flows across multiple blocks.
-    3. You MUST **MERGE** the timestamps for the full context.
-    4. **METHOD**:
-        - Identify the **First Block** where the quote starts. Take its **Start Time**.
-        - Identify the **Last Block** where the quote ends. Take its **End Time**.
-        - Combine them into one range: `[Start of First --> End of Last]`.
-
-    *Example of Merging:*
-    - Block A: `[00:04:14 --> 00:04:24] I think that video...`
-    - Block B: `[00:04:24 --> 00:04:29] ...is the future.`
-    - **YOUR OUTPUT**: `[00:04:14 --> 00:04:29]` (Start of A to End of B)
-    -------------------------------------------------------------
-
-    ### 1. VIDEO OVERVIEW
-    * **Genre:** (Identify the genre)
-    * **Summary:** (A cohesive narrative paragraph describing the flow)
-    * **Target Audience:** (Who is this video for?)
-
-    ### 2. ENGAGING DESCRIPTION (Social Media Ready)
-    * **Hook:** (The opening line)
-    * **Body:** (The core message/story)
-    * **Key Takeaways:** (Bullet points of main features)
-
-    ### 3. IMPORTANT TIMESTAMPS
-    Select the most critical moments. 
-    * **The Hook:** [Start --> End] - "Exact quote from transcript..." - (Description)
-    * **The Conflict:** [Start --> End] - "Exact quote from transcript..." - (Description)
-    * **The Climax/Solution:** [Start --> End] - "Exact quote from transcript..." - (Description)
-    * **Key Highlight:** [Start --> End] - "Exact quote from transcript..." - (Description)
-    * **The Viral Moment:** [Start --> End] - "Exact quote from transcript..." - (Description)
-    * **Conclusion:** [Start --> End] - "Exact quote from transcript..." - (Description)
-
-    ### 4. VIRAL EDIT STRATEGY
-    * **Best Short Clip:** [Start Time --> End Time] (MERGE blocks if necessary to capture the full thought)
-    * **Transcript:** (The full dialogue spoken during this merged timeframe)
-    * **Reasoning:** (Why this segment is the best)
+    You are a Master Video Editor AI (The "Video Alchemist").
     
-    ================================================================================
-    ### 5. AUTOMATION DATA (CRITICAL STEP)
-    Finally, take the 3-5 best clips identified above (including the 'Viral Moment') and format them into a strict JSON list for the editing bot.
-    
-    FORMAT:
+    INPUT DATA:
+    1. **TRANSCRIPT** (Audio with timestamps)
+    2. **VISUAL LOG** (Scene descriptions)
+    3. **AUDIO EVENTS** (SFX, Laughter, Music)
+
+    --- GOAL ---
+    Transform the raw footage into a **Viral Masterpiece** (Approx 20-25% of original length).
+    **Output Structure:** Organized by "Macro Topics" -> "Micro Cuts".
+    **Style:** "Machine Gun" Pacing. High density. Zero fluff.
+
+    --- STEP 1: DETECT GENRE & STRATEGY ---
+    Apply the strict editing logic based on the content type:
+
+    | Genre | **Macro Strategy (The Architect)** | **Micro Rules (The Butcher)** |
+    | :--- | :--- | :--- |
+    | **Podcast** | Group by "Discussion Points". Identify the Guest vs. Host. | **"The Golden Answer"**: Cut the Host's long rambling. Keep the Question -> Hard Cut to Guest's "Punchline". Keep Laughter. |
+    | **Vlog** | Group by "Locations" or "High Energy Events". | **"Visual Lead"**: If Visual Log shows "Static/Car/Room" -> CUT. If Visual shows "Action/Food/Crowd" -> KEEP. Sync audio to these moments. |
+    | **Edu/Tech** | Group by "Problem -> Steps -> Solution". | **"The Utility Strip"**: Remove "Hey guys", "So...", "Basically". Keep only the Action Steps and Results. |
+
+    --- STEP 2: THE "MACHINE GUN" EDITING PROCESS ---
+    Perform these actions mentally before generating the JSON:
+    1. **Scan for Chapters:** Identify the 3-5 main topics.
+    2. **Refine the Clips:** Inside each topic, select the best 20% of lines.
+    3. **Silence Killer:** Assume all pauses > 0.5s are removed.
+    4. **Context Glue:** Ensure the start of a sub-clip grammatically follows the end of the previous one.
+    5. **Visual Validation:** - *Good:* Audio="Look at this" / Visual="Screen/Object" -> **KEEP**.
+       - *Bad:* Audio="Action story" / Visual="Talking Head" -> **discard** (unless story is 10/10).
+
+    --- AUTOMATION DATA (STRICT JSON) ---
+    Return a nested structure: "Topics" containing "Subclips".
+
     ```json
     [
         {{
-            "start": "HH:MM:SS",
-            "end": "HH:MM:SS", 
-            "title": "Clip Title",
-            "description": "Overlay Text (Max 5 words)"
-        }},
-        ...
+            "topic_title": "MACRO TOPIC: [2-3 Word Hook]",
+            "topic_start": "HH:MM:SS (Start of first subclip)",
+            "topic_end": "HH:MM:SS (End of last subclip)",
+            "subclips": [
+                {{
+                    "start": "HH:MM:SS",
+                    "end": "HH:MM:SS",
+                    "description": "Context: [Why this specific cut?]. Visual: [Scene Description]",
+                    "edit_type": "Hard Cut / J-Cut",
+                    "viral_score": "9/10"
+                }},
+                {{
+                    "start": "HH:MM:SS",
+                    "end": "HH:MM:SS",
+                    "description": "Guest punchline.",
+                    "edit_type": "Fast Follow"
+                }}
+            ]
+        }}
     ]
     ```
 
-    REPORT DATA:
+    --- REPORT DATA ---
     {report_text}
     """
+
+
 
 def extract_json_from_text(text):
     """Robust extraction of JSON list from a mixed text response."""
